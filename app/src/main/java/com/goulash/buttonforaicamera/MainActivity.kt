@@ -1,6 +1,7 @@
 package com.goulash.buttonforaicamera
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -9,20 +10,23 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.goulash.buttonforaicamera.ui.theme.ButtonForAiCameraTheme
@@ -64,9 +68,8 @@ private val httpClient: HttpClient by lazy {
             )
         }
         install(HttpTimeout) {
-            requestTimeoutMillis = 45000
-            socketTimeoutMillis = 45000
-            connectTimeoutMillis = 45000
+            requestTimeoutMillis = 20000
+            connectTimeoutMillis = 20000
         }
         install(Logging) {
             logger = Logger.SIMPLE
@@ -95,10 +98,10 @@ data class Response(
 )
 
 class Repository {
-    suspend fun sendSignalToRaspberry(): Response {
+    suspend fun sendSignalToRaspberry(host: String): Response {
         val response = try {
-            httpClient.post("http://192.168.1.198:8080/take_screenshot") {
-                setBody(OrderBody(orderId = 1000))
+            httpClient.post("http://${host}:8080/take_screenshot") {
+                setBody(OrderBody(orderId = 666))
             }.body<Response>()
         } catch (e: Exception) {
             Response(status = "error", message = "Произошла ошибка")
@@ -109,13 +112,22 @@ class Repository {
 
 private val repository = Repository()
 
+private const val HOST_KEY = "HOST_KEY"
+private const val FIRST_LAUNCH_KEY = "FIRST_LAUNCH_KEY"
+
 class MainActivity : ComponentActivity() {
     @SuppressLint("UnusedMaterial3ScaffoldPaddingParameter")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        val sharedPref = this.getSharedPreferences("BUTTON_AI_SHARED_PREFS", Context.MODE_PRIVATE)
         setContent {
             val snackbarHostState = remember { SnackbarHostState() }
+            var host by remember { mutableStateOf(sharedPref.getString(HOST_KEY, "") ?: "") }
+            var firstLaunch by remember {
+                mutableStateOf(sharedPref.getBoolean(FIRST_LAUNCH_KEY, true))
+            }
+            val coroutineScope = rememberCoroutineScope()
             ButtonForAiCameraTheme {
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
@@ -124,13 +136,38 @@ class MainActivity : ComponentActivity() {
                     },
                 ) { _ ->
                     Box(modifier = Modifier.fillMaxSize()) {
+                        if (firstLaunch) {
+                            TextField(
+                                value = host,
+                                onValueChange = { host = it },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp)
+                                    .align(Alignment.TopCenter)
+                            )
+                        }
+
                         SendButton(
                             text = "",
-                            snackbarHostState = snackbarHostState,
                             modifier = Modifier
                                 .width(200.dp)
                                 .height(200.dp)
-                                .align(Alignment.Center)
+                                .align(Alignment.Center),
+                            onClick = {
+                                if (firstLaunch) {
+                                    with(sharedPref.edit()) {
+                                        putString(HOST_KEY, host)
+                                        putBoolean(FIRST_LAUNCH_KEY, false)
+                                        apply()
+                                    }
+                                    firstLaunch = false
+                                }
+
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    val response = repository.sendSignalToRaspberry(host = host)
+                                    snackbarHostState.showSnackbar(message = response.message)
+                                }
+                            }
                         )
                     }
                 }
@@ -140,18 +177,19 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun SendButton(text: String, snackbarHostState: SnackbarHostState, modifier: Modifier = Modifier) {
-    val coroutineScope = rememberCoroutineScope()
+fun SendButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     Button(
-        onClick = {
-            coroutineScope.launch(Dispatchers.IO) {
-                val response = repository.sendSignalToRaspberry()
-                snackbarHostState.showSnackbar(message = response.message)
-            }
-        },
+        onClick = onClick,
         modifier = modifier,
         colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
-        elevation = ButtonDefaults.elevatedButtonElevation(defaultElevation = 20.dp, pressedElevation = 0.dp)
+        elevation = ButtonDefaults.elevatedButtonElevation(
+            defaultElevation = 20.dp,
+            pressedElevation = 0.dp
+        )
     ) {
         Text(
             text = text,
